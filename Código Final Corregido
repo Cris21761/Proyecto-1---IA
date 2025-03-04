@@ -1,0 +1,387 @@
+import tkinter as tk
+from tkinter import filedialog, Scale, messagebox
+import numpy as np
+import heapq
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import time
+import math
+import queue
+from collections import deque
+import threading
+import random
+
+
+class MazeSolver:
+    def __init__(self):
+        self.laberinto = None
+        self.inicio = None
+        self.fin = None
+        self.stop_flag = False
+        self.update_queue = queue.Queue()
+        self.figure = None
+        self.canvas = None
+        self.ax = None
+        self.simulacion_activa = False  # Nuevo atributo para el modo de simulación
+
+    def leer_laberinto(self, nombre_archivo):
+        with open(nombre_archivo, 'r') as archivo:
+            laberinto = []
+            inicio, fin = None, None
+            for i, line in enumerate(archivo):
+                fila = list(map(int, line.strip().split(',')))
+                laberinto.append(fila)
+                for j, valor in enumerate(fila):
+                    if valor == 2 and not self.simulacion_activa:  # Solo leer inicio si no está en modo simulación
+                        inicio = (i, j)
+                    elif valor == 3:
+                        fin = (i, j)
+            if fin is None:
+                raise ValueError("No se encontró un punto final (3) en el laberinto.")
+            if not self.simulacion_activa and inicio is None:
+                raise ValueError("No se encontró un punto de inicio (2) en el laberinto.")
+            return np.array(laberinto), inicio, fin
+
+    def generar_inicio_aleatorio(self):
+        espacios_vacios = []
+        for i in range(self.laberinto.shape[0]):
+            for j in range(self.laberinto.shape[1]):
+                if self.laberinto[i, j] == 0:  # Buscar espacios vacíos
+                    espacios_vacios.append((i, j))
+        if not espacios_vacios:
+            raise ValueError("No hay espacios vacíos en el laberinto para generar un punto de inicio.")
+        return random.choice(espacios_vacios)  # Seleccionar un espacio vacío aleatorio
+
+    def setup_plot(self, frame):
+        self.figure = Figure(figsize=(6, 6), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def visualizar_laberinto(self, visitados=set(), camino_final=None, final=False):
+        self.update_queue.put((visitados, camino_final, final))
+
+    def update_plot(self, visitados=set(), camino_final=None, final=False):
+        colores = ['white', 'black', 'blue', 'green', 'yellow', 'red']
+        cmap = plt.cm.colors.ListedColormap(colores)
+        lab_viz = self.laberinto.copy()
+
+        if not final:
+            for x, y in visitados:
+                lab_viz[x, y] = 4  # Marcar nodos visitados
+
+        if camino_final and final:
+            lab_viz = self.laberinto.copy()
+            for x, y in camino_final:
+                lab_viz[x, y] = 5  # Marcar el camino final
+
+        self.ax.clear()
+        self.ax.imshow(lab_viz, cmap=cmap)
+        self.ax.invert_yaxis()
+        self.canvas.draw()
+
+    def heuristica(self, a, b, tipo):
+        if tipo == 'manhattan':
+            return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        elif tipo == 'euclidiana':
+            return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+
+    def buscar_camino(self, metodo, tipo_heuristica, viz_interval=500):
+        self.stop_flag = False
+        visitados = set()  # Conjunto para rastrear nodos visitados
+        movimientos = [(0, 1), (1, 0), (0, -1), (-1, 0)]  # Derecha, abajo, izquierda, arriba
+
+        # Para DFS favorecemos explorar primero hacia abajo y derecha
+        if metodo == 'dfs':
+            movimientos = [(1, 0), (0, 1), (-1, 0), (0, -1)]  # Abajo, derecha, arriba, izquierda
+
+        estructura = None
+        pop_func = None
+
+        # Inicializar el diccionario de costos para algoritmos que lo requieren
+        costos = {self.inicio: 0}
+
+        if self.simulacion_activa:  # Si el modo de simulación está activado
+            self.inicio = self.generar_inicio_aleatorio()  # Generar un nuevo punto de inicio aleatorio
+            print(f"Nuevo punto de inicio aleatorio: {self.inicio}")
+
+        if metodo == 'bfs':
+            estructura = deque([(self.inicio, [])])
+            pop_func = lambda: estructura.popleft()
+        elif metodo == 'dfs':
+            # Para DFS, usamos una lista que actúa como pila
+            estructura = [(self.inicio, [])]
+            pop_func = lambda: estructura.pop()
+        elif metodo == 'greedy':
+            estructura = [(self.heuristica(self.inicio, self.fin, tipo_heuristica), 0, self.inicio, [])]
+            heapq.heapify(estructura)
+            pop_func = lambda: heapq.heappop(estructura)
+        elif metodo == 'a_star':
+            estructura = [(self.heuristica(self.inicio, self.fin, tipo_heuristica), 0, self.inicio, [])]
+            heapq.heapify(estructura)
+            pop_func = lambda: heapq.heappop(estructura)
+
+        iteraciones = 0
+        contador_empate = 0  # Contador para desempatar prioridades iguales
+        inicio_tiempo = time.time()  # Iniciar el contador de tiempo
+
+        # IMPORTANTE: En DFS, solo añadimos el nodo inicial a visitados cuando lo procesamos
+        # no antes de añadirlo a la estructura
+
+        while estructura and not self.stop_flag:
+            iteraciones += 1
+
+            if metodo in ['bfs', 'dfs']:
+                (x, y), path = pop_func()
+            else:  # greedy o a_star
+                _, _, (x, y), path = pop_func()
+
+            # Si ya visitamos este nodo, continuamos con el siguiente
+            if (x, y) in visitados:
+                continue
+
+            # Marcar como visitado cuando lo procesamos
+            visitados.add((x, y))
+
+            if iteraciones % viz_interval == 0:
+                self.visualizar_laberinto(visitados.copy())
+                time.sleep(0.05)
+
+            # Si llegamos al destino, terminamos
+            if (x, y) == self.fin:
+                final_path = path + [(x, y)]
+                self.visualizar_laberinto(visitados.copy(), final_path, final=True)
+                print(f"Cantidad de nodos visitados: {len(visitados)}")
+                print(f"Largo del camino solución: {len(final_path)}")
+                print(f"Tiempo de ejecución: {time.time() - inicio_tiempo:.4f} segundos")
+                return final_path, False
+
+            # Explorar vecinos (en orden inverso para DFS para mantener el orden correcto al sacar de la pila)
+            vecinos = []
+            for dx, dy in movimientos:
+                nx, ny = x + dx, y + dy
+                # Verificar que esté dentro de los límites y no sea una pared
+                if 0 <= nx < self.laberinto.shape[0] and 0 <= ny < self.laberinto.shape[1] and self.laberinto[
+                    nx, ny] != 1:
+                    vecinos.append((nx, ny))
+
+            # Para DFS, queremos explorar los vecinos en el orden definido por movimientos
+            # Por lo tanto, añadimos a la pila en orden inverso
+            if metodo == 'dfs':
+                for nx, ny in reversed(vecinos):
+                    if (nx, ny) not in visitados:  # Verificar que no haya sido visitado
+                        new_path = path + [(x, y)]
+                        estructura.append(((nx, ny), new_path))
+            else:  # Otros algoritmos
+                for nx, ny in vecinos:
+                    if metodo == 'bfs':
+                        if (nx, ny) not in visitados:  # Para BFS sí verificamos visitados
+                            new_path = path + [(x, y)]
+                            estructura.append(((nx, ny), new_path))
+                    elif metodo == 'greedy':
+                        if (nx, ny) not in visitados:
+                            contador_empate += 1
+                            new_path = path + [(x, y)]
+                            priority = self.heuristica((nx, ny), self.fin, tipo_heuristica)
+                            heapq.heappush(estructura, (priority, contador_empate, (nx, ny), new_path))
+                    elif metodo == 'a_star':
+                        new_cost = costos[(x, y)] + 1
+                        if (nx, ny) not in costos or new_cost < costos[(nx, ny)]:
+                            costos[(nx, ny)] = new_cost
+                            contador_empate += 1
+                            new_path = path + [(x, y)]
+                            f_value = new_cost + self.heuristica((nx, ny), self.fin, tipo_heuristica)
+                            heapq.heappush(estructura, (f_value, contador_empate, (nx, ny), new_path))
+
+        if self.stop_flag:
+            return None, True
+        return None, False
+
+
+class MazeSolverApp:
+    def __init__(self, root):
+        self.root = root
+        self.maze_solver = MazeSolver()
+        self.algorithm_thread = None
+        self.running = False
+        self.setup_ui()
+        self.check_updates()
+
+    def setup_ui(self):
+        self.root.title("Buscador de Caminos en Laberintos")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        main_frame = tk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = tk.Frame(main_frame, width=250)
+        left_frame.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.Y)
+        left_frame.pack_propagate(False)
+
+        right_frame = tk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        self.maze_solver.setup_plot(right_frame)
+
+        btn_cargar = tk.Button(left_frame, text="Cargar Laberinto", command=self.cargar_archivo)
+        btn_cargar.pack(pady=5, fill=tk.X)
+
+        # Nuevo botón para activar/desactivar el modo de simulación
+        btn_simulacion = tk.Button(left_frame, text="Activar Simulación Aleatoria", command=self.toggle_simulacion)
+        btn_simulacion.pack(pady=5, fill=tk.X)
+
+        algo_frame = tk.LabelFrame(left_frame, text="Algoritmo", padx=5, pady=5)
+        algo_frame.pack(fill=tk.X, pady=5)
+
+        self.algoritmo_var = tk.StringVar()
+        algoritmos = {'BFS': 'bfs', 'DFS': 'dfs', 'Greedy Best-First': 'greedy', 'A*': 'a_star'}
+        for texto, valor in algoritmos.items():
+            tk.Radiobutton(algo_frame, text=texto, variable=self.algoritmo_var, value=valor).pack(anchor=tk.W)
+
+        heur_frame = tk.LabelFrame(left_frame, text="Heurística", padx=5, pady=5)
+        heur_frame.pack(fill=tk.X, pady=5)
+
+        self.heuristica_var = tk.StringVar(value='manhattan')
+        tk.Radiobutton(heur_frame, text="Manhattan", variable=self.heuristica_var, value='manhattan').pack(anchor=tk.W)
+        tk.Radiobutton(heur_frame, text="Euclidiana", variable=self.heuristica_var, value='euclidiana').pack(
+            anchor=tk.W)
+
+        viz_frame = tk.LabelFrame(left_frame, text="Visualización", padx=5, pady=5)
+        viz_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(viz_frame, text="Frecuencia de visualización:").pack(anchor=tk.W)
+        self.viz_interval_var = tk.IntVar(value=500)
+
+        tk.Radiobutton(viz_frame, text="Alta (50 iteraciones)",
+                       variable=self.viz_interval_var, value=50).pack(anchor=tk.W)
+        tk.Radiobutton(viz_frame, text="Media (200 iteraciones)",
+                       variable=self.viz_interval_var, value=200).pack(anchor=tk.W)
+        tk.Radiobutton(viz_frame, text="Baja (500 iteraciones)",
+                       variable=self.viz_interval_var, value=500).pack(anchor=tk.W)
+
+        tk.Label(viz_frame, text="Personalizada:").pack(anchor=tk.W)
+        self.slider = Scale(viz_frame, from_=10, to=1000,
+                            orient=tk.HORIZONTAL,
+                            variable=self.viz_interval_var,
+                            resolution=10)
+        self.slider.pack(fill=tk.X)
+
+        btn_frame = tk.Frame(left_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
+
+        self.btn_ejecutar = tk.Button(btn_frame, text="Ejecutar Algoritmo", command=self.ejecutar_algoritmo)
+        self.btn_ejecutar.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+
+        self.btn_stop = tk.Button(btn_frame, text="Detener", command=self.detener_algoritmo, state=tk.DISABLED)
+        self.btn_stop.pack(side=tk.LEFT, padx=5, pady=10, fill=tk.X, expand=True)
+
+        self.btn_close = tk.Button(left_frame, text="Cerrar Aplicación", command=self.on_closing, bg="#ffcccc")
+        self.btn_close.pack(pady=10, fill=tk.X)
+
+        self.status_label = tk.Label(left_frame, text="", bd=1, relief=tk.SUNKEN, anchor=tk.W)
+        self.status_label.pack(fill=tk.X, side=tk.BOTTOM, pady=5)
+
+    def toggle_simulacion(self):
+        self.maze_solver.simulacion_activa = not self.maze_solver.simulacion_activa
+        estado = "Activado" if self.maze_solver.simulacion_activa else "Desactivado"
+        self.status_label.config(text=f"Modo de simulación aleatoria: {estado}")
+
+    def check_updates(self):
+        try:
+            while not self.maze_solver.update_queue.empty():
+                visitados, camino_final, final = self.maze_solver.update_queue.get_nowait()
+                self.maze_solver.update_plot(visitados, camino_final, final)
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.check_updates)
+
+    def cargar_archivo(self):
+        archivo = filedialog.askopenfilename(title="Seleccionar archivo de laberinto",
+                                             filetypes=[("Text files", "*.txt")])
+        if archivo:
+            try:
+                self.maze_solver.laberinto, self.maze_solver.inicio, self.maze_solver.fin = self.maze_solver.leer_laberinto(
+                    archivo)
+                self.maze_solver.update_plot()
+                self.status_label.config(text=f"Laberinto cargado: {archivo.split('/')[-1]}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Error al cargar el laberinto: {str(e)}")
+
+    def ejecutar_algoritmo(self):
+        opcion = self.algoritmo_var.get()
+        if not opcion:
+            messagebox.showwarning("Advertencia", "Por favor seleccione un algoritmo.")
+            return
+
+        if self.maze_solver.laberinto is None:
+            messagebox.showwarning("Advertencia", "Por favor cargue un laberinto primero.")
+            return
+
+        tipo_heuristica = self.heuristica_var.get()
+        viz_interval = self.viz_interval_var.get()
+
+        self.btn_ejecutar.config(state=tk.DISABLED)
+        self.btn_stop.config(state=tk.NORMAL)
+        self.status_label.config(text=f"Ejecutando algoritmo {opcion.upper()}...")
+        self.running = True
+
+        self.algorithm_thread = threading.Thread(
+            target=self.run_algorithm,
+            args=(opcion, tipo_heuristica, viz_interval)
+        )
+        self.algorithm_thread.daemon = True
+        self.algorithm_thread.start()
+
+    def run_algorithm(self, opcion, tipo_heuristica, viz_interval):
+        try:
+            inicio_tiempo = time.time()
+            resultado, stopped = self.maze_solver.buscar_camino(opcion, tipo_heuristica, viz_interval)
+            fin_tiempo = time.time()
+
+            self.root.after(0, self.update_ui_after_algorithm, resultado, stopped, inicio_tiempo, fin_tiempo,
+                            viz_interval)
+        except Exception as e:
+            self.root.after(0, lambda: self.status_label.config(text=f"Error: {str(e)}"))
+            self.root.after(0, self.reset_buttons)
+            print(f"Error en el algoritmo: {str(e)}")
+
+    def update_ui_after_algorithm(self, camino, stopped, inicio_tiempo, fin_tiempo, viz_interval):
+        tiempo_total = fin_tiempo - inicio_tiempo
+
+        if stopped:
+            self.status_label.config(text=f"Algoritmo detenido después de {tiempo_total:.2f} segundos")
+        elif camino:
+            self.status_label.config(text=f"Camino encontrado en {tiempo_total:.2f} segundos ({len(camino)} pasos)")
+        else:
+            self.status_label.config(text=f"No se encontró un camino ({tiempo_total:.2f} segundos)")
+
+        self.reset_buttons()
+        self.running = False
+
+    def reset_buttons(self):
+        self.btn_ejecutar.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.DISABLED)
+
+    def detener_algoritmo(self):
+        if self.algorithm_thread and self.algorithm_thread.is_alive():
+            self.maze_solver.stop_flag = True
+            self.btn_stop.config(state=tk.DISABLED)
+            self.status_label.config(text="Deteniendo algoritmo...")
+
+    def on_closing(self):
+        if self.running:
+            if messagebox.askyesno("Confirmar", "Un algoritmo está en ejecución. ¿Desea detenerlo y salir?"):
+                self.maze_solver.stop_flag = True
+                self.root.destroy()
+        else:
+            self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.geometry("1000x700")  # Tamaño inicial de la ventana
+    app = MazeSolverApp(root)
+    root.mainloop()
